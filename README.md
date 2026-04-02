@@ -34,3 +34,15 @@ This app is configured to run on Fly.io with the current Express server and a pe
    `fly deploy`
 
 The app stores its production SQLite database at `/data/portal.sqlite` on the Fly volume, so the admin portal and login system continue to work after restarts.
+
+## Deploy On Render
+
+This repository also includes a Render Blueprint for hosting the full Express + SQLite application with a persistent disk.
+
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/weututiy-arch/daas-data-as-a-service)
+
+Notes:
+
+1. Render persistent disks are available on paid web services, so this path is for the full portal-enabled website, not a static-only deploy.
+2. During the first deploy, Render will prompt you for `SESSION_SECRET` and `GEMINI_API_KEY`.
+3. The Blueprint mounts persistent storage at `/app/data`, and the app stores its SQLite database at `/app/data/portal.sqlite`.
