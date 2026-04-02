@@ -27,20 +27,27 @@ if (role !== 'admin' && role !== 'employee') {
   process.exit(1);
 }
 
-const existingUser = findUserById(id);
-const salt = crypto.randomBytes(16).toString('hex');
-const hash = crypto.scryptSync(password, salt, 64).toString('hex');
+const run = async () => {
+  const existingUser = await findUserById(id);
+  const salt = crypto.randomBytes(16).toString('hex');
+  const hash = crypto.scryptSync(password, salt, 64).toString('hex');
 
-upsertUser({
-  id,
-  name,
-  role,
-  email,
-  passwordSalt: salt,
-  passwordHash: hash,
-  isActive: true,
-  createdAt: existingUser?.createdAt || Date.now(),
-  updatedAt: Date.now(),
+  await upsertUser({
+    id,
+    name,
+    role,
+    email,
+    passwordSalt: salt,
+    passwordHash: hash,
+    isActive: true,
+    createdAt: existingUser?.createdAt || Date.now(),
+    updatedAt: Date.now(),
+  });
+
+  console.log(`Saved database user ${id}.`);
+};
+
+void run().catch(error => {
+  console.error('Failed to save database user.', error);
+  process.exit(1);
 });
-
-console.log(`Saved database user ${id}.`);

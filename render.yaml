@@ -2,24 +2,18 @@ services:
   - type: web
     name: daas-data-as-a-service
     runtime: docker
-    plan: starter
+    plan: free
     region: singapore
     healthCheckPath: /api/health
     autoDeployTrigger: commit
     dockerfilePath: ./Dockerfile
     dockerContext: .
-    disk:
-      name: daas-data
-      mountPath: /app/data
-      sizeGB: 1
     envVars:
       - key: NODE_ENV
         value: production
       - key: PORT
         value: "10000"
-      - key: DATABASE_PATH
-        value: /app/data/portal.sqlite
-      - key: SESSION_SECRET
+      - key: DATABASE_URL
         sync: false
-      - key: GEMINI_API_KEY
+      - key: SESSION_SECRET
         sync: false

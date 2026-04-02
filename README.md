@@ -37,12 +37,19 @@ The app stores its production SQLite database at `/data/portal.sqlite` on the Fl
 
 ## Deploy On Render
 
-This repository also includes a Render Blueprint for hosting the full Express + SQLite application with a persistent disk.
+This repository also includes a Render Blueprint for hosting the full Express application on Render Free with a hosted Postgres database such as Supabase Free.
 
 [![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/weututiy-arch/daas-data-as-a-service)
 
+Free hosting flow:
+
+1. Create a Supabase project and copy its Postgres connection string.
+2. Open the Render deploy link above and deploy the Blueprint from this repository.
+3. In Render, set `DATABASE_URL` to your Supabase connection string.
+4. Set `SESSION_SECRET` to a long random string.
+5. `GEMINI_API_KEY` is optional. If you skip it, the site uses the existing image fallbacks.
+
 Notes:
 
-1. Render persistent disks are available on paid web services, so this path is for the full portal-enabled website, not a static-only deploy.
-2. During the first deploy, Render will prompt you for `SESSION_SECRET` and `GEMINI_API_KEY`.
-3. The Blueprint mounts persistent storage at `/app/data`, and the app stores its SQLite database at `/app/data/portal.sqlite`.
+1. Render Free web services sleep when idle, so the first request after inactivity will wake the app up.
+2. Local development still falls back to SQLite automatically when `DATABASE_URL` is not set.

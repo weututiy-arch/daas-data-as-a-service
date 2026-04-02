@@ -3,6 +3,7 @@ import crypto from 'crypto';
 import express from 'express';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import type { NextFunction, Request, Response } from 'express';
 import type { LoginErrorCode } from '../src/types/auth';
 import {
   cleanupExpiredSessions,
@@ -14,6 +15,7 @@ import {
   findSessionById,
   findUserById,
   getDatabasePath,
+  initDatabase,
   listAdminUsers,
   touchSession as updateSessionTimestamps,
   upsertUser,
@@ -34,6 +36,12 @@ app.use((_, res, next) => {
   res.setHeader('Cache-Control', 'no-store');
   next();
 });
+
+const asyncRoute = (
+  handler: (request: Request, response: Response, next: NextFunction) => Promise<unknown>
+) => (request: Request, response: Response, next: NextFunction) => {
+  void handler(request, response, next).catch(next);
+};
 
 const timingSafeMatch = (a: string, b: string) => {
   const left = Buffer.from(a);
@@ -93,7 +101,7 @@ const parseCookies = (cookieHeader?: string) => {
   );
 };
 
-const getSessionIdFromRequest = (request: express.Request) => {
+const getSessionIdFromRequest = (request: Request) => {
   const cookies = parseCookies(request.headers.cookie);
   const rawCookie = cookies[SESSION_COOKIE_NAME];
   if (!rawCookie) {
@@ -116,71 +124,71 @@ const getSessionIdFromRequest = (request: express.Request) => {
   return sessionId;
 };
 
-const getSessionFromRequest = (request: express.Request) => {
-  cleanupExpiredSessions();
+const getSessionFromRequest = async (request: Request) => {
+  await cleanupExpiredSessions();
 
   const sessionId = getSessionIdFromRequest(request);
   if (!sessionId) {
     return null;
   }
 
-  const session = findSessionById(sessionId);
+  const session = await findSessionById(sessionId);
   if (!session) {
     return null;
   }
 
-  const activeSession = findActiveSessionByUserId(session.userId);
+  const activeSession = await findActiveSessionByUserId(session.userId);
   if (!activeSession || activeSession.sessionId !== session.sessionId) {
-    deleteSessionById(session.sessionId);
+    await deleteSessionById(session.sessionId);
     return null;
   }
 
   return session;
 };
 
-const setSessionCookie = (response: express.Response, sessionId: string) => {
+const setSessionCookie = (response: Response, sessionId: string) => {
   const signedValue = `${sessionId}.${signValue(sessionId)}`;
   response.setHeader('Set-Cookie', serializeCookie(SESSION_COOKIE_NAME, signedValue, Math.floor(SESSION_TTL_MS / 1000)));
 };
 
-const clearSessionCookie = (response: express.Response) => {
+const clearSessionCookie = (response: Response) => {
   response.setHeader('Set-Cookie', serializeCookie(SESSION_COOKIE_NAME, '', 0));
 };
 
-const refreshSession = (session: DatabaseSessionRecord) => {
+const refreshSession = async (session: DatabaseSessionRecord) => {
   const updated = {
     ...session,
     lastSeenAt: Date.now(),
     expiresAt: Date.now() + SESSION_TTL_MS,
   };
-  updateSessionTimestamps(updated.sessionId, updated.lastSeenAt, updated.expiresAt);
+  await updateSessionTimestamps(updated.sessionId, updated.lastSeenAt, updated.expiresAt);
   return updated;
 };
 
-const jsonAuthError = (response: express.Response, status: number, error: LoginErrorCode) =>
+const jsonAuthError = (response: Response, status: number, error: LoginErrorCode) =>
   response.status(status).json({ user: null, error });
 
-const getAuthenticatedUser = (request: express.Request, response: express.Response) => {
-  const session = getSessionFromRequest(request);
+const getAuthenticatedUser = async (request: Request, response: Response) => {
+  const session = await getSessionFromRequest(request);
   if (!session) {
     clearSessionCookie(response);
     return null;
   }
 
-  const user = findUserById(session.userId);
+  const user = await findUserById(session.userId);
   if (!user || !user.isActive) {
-    deleteSessionById(session.sessionId);
+    await deleteSessionById(session.sessionId);
     clearSessionCookie(response);
     return null;
   }
 
-  const refreshedSession = refreshSession(session);
+  const refreshedSession = await refreshSession(session);
   setSessionCookie(response, refreshedSession.sessionId);
   return { session: refreshedSession, user };
 };
 
-const requireAdmin = (request: express.Request, response: express.Response) => {
-  const auth = getAuthenticatedUser(request, response);
+const requireAdmin = async (request: Request, response: Response) => {
+  const auth = await getAuthenticatedUser(request, response);
   if (!auth) {
     response.status(401).json({ error: 'UNAUTHORIZED' });
     return null;
@@ -194,10 +202,10 @@ const requireAdmin = (request: express.Request, response: express.Response) => {
   return auth;
 };
 
-app.post('/api/auth/login', (request, response) => {
+app.post('/api/auth/login', asyncRoute(async (request, response) => {
   const id = typeof request.body?.id === 'string' ? request.body.id.trim().toUpperCase() : '';
   const password = typeof request.body?.password === 'string' ? request.body.password : '';
-  const portalUser = findUserById(id);
+  const portalUser = await findUserById(id);
 
   if (!portalUser) {
     return jsonAuthError(response, 401, 'INVALID_CREDENTIALS');
@@ -212,19 +220,19 @@ app.post('/api/auth/login', (request, response) => {
     return jsonAuthError(response, 401, 'INVALID_CREDENTIALS');
   }
 
-  const currentSession = getSessionFromRequest(request);
+  const currentSession = await getSessionFromRequest(request);
   if (currentSession?.userId === portalUser.id) {
-    const refreshedSession = refreshSession(currentSession);
+    const refreshedSession = await refreshSession(currentSession);
     setSessionCookie(response, refreshedSession.sessionId);
     return response.json({ user: toPublicUser(portalUser) });
   }
 
-  const existingSession = findActiveSessionByUserId(portalUser.id);
+  const existingSession = await findActiveSessionByUserId(portalUser.id);
   if (existingSession) {
     if (existingSession.expiresAt > Date.now()) {
       return jsonAuthError(response, 409, 'ALREADY_ACTIVE_ELSEWHERE');
     }
-    deleteSessionById(existingSession.sessionId);
+    await deleteSessionById(existingSession.sessionId);
   }
 
   const sessionId = crypto.randomUUID();
@@ -236,42 +244,42 @@ app.post('/api/auth/login', (request, response) => {
     expiresAt: Date.now() + SESSION_TTL_MS,
   };
 
-  createSession(session);
+  await createSession(session);
   setSessionCookie(response, sessionId);
 
   return response.json({ user: toPublicUser(portalUser) });
-});
+}));
 
-app.get('/api/auth/session', (request, response) => {
-  const auth = getAuthenticatedUser(request, response);
+app.get('/api/auth/session', asyncRoute(async (request, response) => {
+  const auth = await getAuthenticatedUser(request, response);
   if (!auth) {
     return response.status(401).json({ user: null });
   }
 
   return response.json({ user: toPublicUser(auth.user) });
-});
+}));
 
-app.post('/api/auth/logout', (request, response) => {
-  const session = getSessionFromRequest(request);
+app.post('/api/auth/logout', asyncRoute(async (request, response) => {
+  const session = await getSessionFromRequest(request);
   if (session) {
-    deleteSessionById(session.sessionId);
+    await deleteSessionById(session.sessionId);
   }
 
   clearSessionCookie(response);
   return response.status(204).end();
-});
+}));
 
-app.get('/api/admin/users', (request, response) => {
-  const auth = requireAdmin(request, response);
+app.get('/api/admin/users', asyncRoute(async (request, response) => {
+  const auth = await requireAdmin(request, response);
   if (!auth) {
     return;
   }
 
-  return response.json({ users: listAdminUsers() });
-});
+  return response.json({ users: await listAdminUsers() });
+}));
 
-app.post('/api/admin/users', (request, response) => {
-  const auth = requireAdmin(request, response);
+app.post('/api/admin/users', asyncRoute(async (request, response) => {
+  const auth = await requireAdmin(request, response);
   if (!auth) {
     return;
   }
@@ -286,14 +294,14 @@ app.post('/api/admin/users', (request, response) => {
     return response.status(400).json({ error: 'INVALID_INPUT' });
   }
 
-  if (findUserById(id)) {
+  if (await findUserById(id)) {
     return response.status(409).json({ error: 'USER_EXISTS' });
   }
 
   const now = Date.now();
   const { passwordSalt, passwordHash } = createPasswordHash(password);
 
-  upsertUser({
+  await upsertUser({
     id,
     name,
     role,
@@ -305,18 +313,19 @@ app.post('/api/admin/users', (request, response) => {
     updatedAt: now,
   });
 
-  return response.status(201).json({ user: listAdminUsers().find(user => user.id === id) });
-});
+  const users = await listAdminUsers();
+  return response.status(201).json({ user: users.find(user => user.id === id) });
+}));
 
-app.patch('/api/admin/users/:id/status', (request, response) => {
-  const auth = requireAdmin(request, response);
+app.patch('/api/admin/users/:id/status', asyncRoute(async (request, response) => {
+  const auth = await requireAdmin(request, response);
   if (!auth) {
     return;
   }
 
   const targetId = request.params.id.trim().toUpperCase();
   const nextIsActive = request.body?.isActive;
-  const targetUser = findUserById(targetId);
+  const targetUser = await findUserById(targetId);
 
   if (!targetUser || typeof nextIsActive !== 'boolean') {
     return response.status(400).json({ error: 'INVALID_INPUT' });
@@ -326,67 +335,67 @@ app.patch('/api/admin/users/:id/status', (request, response) => {
     return response.status(400).json({ error: 'CANNOT_DISABLE_SELF' });
   }
 
-  upsertUser({
+  await upsertUser({
     ...targetUser,
     isActive: nextIsActive,
     updatedAt: Date.now(),
   });
 
   if (!nextIsActive) {
-    deleteSessionsByUserId(targetId);
+    await deleteSessionsByUserId(targetId);
   }
 
-  return response.json({ user: listAdminUsers().find(user => user.id === targetId) });
-});
+  const users = await listAdminUsers();
+  return response.json({ user: users.find(user => user.id === targetId) });
+}));
 
-app.post('/api/admin/users/:id/reset-password', (request, response) => {
-  const auth = requireAdmin(request, response);
+app.post('/api/admin/users/:id/reset-password', asyncRoute(async (request, response) => {
+  const auth = await requireAdmin(request, response);
   if (!auth) {
     return;
   }
 
   const targetId = request.params.id.trim().toUpperCase();
   const password = typeof request.body?.password === 'string' ? request.body.password : '';
-  const targetUser = findUserById(targetId);
+  const targetUser = await findUserById(targetId);
 
   if (!targetUser || password.length < 8) {
     return response.status(400).json({ error: 'INVALID_INPUT' });
   }
 
   const { passwordSalt, passwordHash } = createPasswordHash(password);
-  upsertUser({
+  await upsertUser({
     ...targetUser,
     passwordSalt,
     passwordHash,
     updatedAt: Date.now(),
   });
-  deleteSessionsByUserId(targetId);
+  await deleteSessionsByUserId(targetId);
 
-  return response.json({ user: listAdminUsers().find(user => user.id === targetId) });
-});
+  const users = await listAdminUsers();
+  return response.json({ user: users.find(user => user.id === targetId) });
+}));
 
-app.post('/api/admin/users/:id/revoke-session', (request, response) => {
-  const auth = requireAdmin(request, response);
+app.post('/api/admin/users/:id/revoke-session', asyncRoute(async (request, response) => {
+  const auth = await requireAdmin(request, response);
   if (!auth) {
     return;
   }
 
   const targetId = request.params.id.trim().toUpperCase();
-  const targetUser = findUserById(targetId);
+  const targetUser = await findUserById(targetId);
 
   if (!targetUser) {
     return response.status(404).json({ error: 'USER_NOT_FOUND' });
   }
 
-  deleteSessionsByUserId(targetId);
+  await deleteSessionsByUserId(targetId);
   return response.status(204).end();
-});
+}));
 
 app.get('/api/health', (_, response) => {
   response.json({ ok: true });
 });
-
-setInterval(cleanupExpiredSessions, 60 * 1000).unref();
 
 if (IS_PRODUCTION) {
   const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -402,7 +411,36 @@ if (IS_PRODUCTION) {
   });
 }
 
-app.listen(PORT, HOST, () => {
-  console.log(`Auth server ready on http://${HOST}:${PORT}`);
-  console.log(`Using SQLite database at ${getDatabasePath()}`);
+app.use((error: unknown, request: Request, response: Response, next: NextFunction) => {
+  console.error('Request failed', error);
+
+  if (response.headersSent) {
+    return next(error);
+  }
+
+  if (request.path.startsWith('/api/')) {
+    return response.status(500).json({ error: 'INTERNAL_SERVER_ERROR' });
+  }
+
+  return response.status(500).send('Internal Server Error');
+});
+
+const bootstrap = async () => {
+  await initDatabase();
+
+  setInterval(() => {
+    void cleanupExpiredSessions().catch(error => {
+      console.error('Failed to clean expired sessions', error);
+    });
+  }, 60 * 1000).unref();
+
+  app.listen(PORT, HOST, () => {
+    console.log(`Auth server ready on http://${HOST}:${PORT}`);
+    console.log(`Using database target ${getDatabasePath()}`);
+  });
+};
+
+void bootstrap().catch(error => {
+  console.error('Failed to start server', error);
+  process.exit(1);
 });
