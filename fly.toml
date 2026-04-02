@@ -1,0 +1,39 @@
+# Replace the app name if Fly reports that it is already taken.
+app = "daas-data-as-a-service"
+primary_region = "bom"
+
+[env]
+  NODE_ENV = "production"
+  PORT = "8080"
+  DATABASE_PATH = "/data/portal.sqlite"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_start_machines = true
+  auto_stop_machines = "off"
+  min_machines_running = 1
+  processes = ["app"]
+
+  [[http_service.checks]]
+    grace_period = "15s"
+    interval = "30s"
+    timeout = "5s"
+    method = "GET"
+    path = "/api/health"
+
+    [http_service.checks.headers]
+      X-Forwarded-Proto = "https"
+
+[mounts]
+  source = "daas_data"
+  destination = "/data"
+  initial_size = "3gb"
+  auto_extend_size_threshold = 80
+  auto_extend_size_increment = "1gb"
+  auto_extend_size_limit = "10gb"
+
+[[vm]]
+  cpu_kind = "shared"
+  cpus = 1
+  memory = "512mb"
